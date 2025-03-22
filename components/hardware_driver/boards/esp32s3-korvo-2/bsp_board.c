@@ -42,7 +42,7 @@
 #define ADC_I2S_CHANNEL 4
 static sdmmc_card_t *card;
 static const char *TAG = "board";
-static int s_play_sample_rate = 16000;
+static int s_play_sample_rate = 8000 /*16000*/;
 static int s_play_channel_format = 1;
 static int s_bits_per_chan = 16;
 
@@ -285,6 +285,7 @@ static esp_err_t bsp_i2s_init(i2s_port_t i2s_num, uint32_t sample_rate, int chan
     ret_val |= i2s_channel_init_std_mode(rx_handle, &std_cfg);
     ret_val |= i2s_channel_enable(tx_handle);
     ret_val |= i2s_channel_enable(rx_handle);
+    ESP_LOGE(TAG, "sample rate %d", sample_rate);
 #else
     i2s_channel_fmt_t channel_fmt = I2S_CHANNEL_FMT_RIGHT_LEFT;
     if (channel_format == 1) {
@@ -372,6 +373,7 @@ esp_err_t bsp_audio_play(const int16_t* data, int length, TickType_t ticks_to_wa
     int audio_time = 1;
     audio_time *= (16000 / s_play_sample_rate);
     audio_time *= (2 / s_play_channel_format);
+    ESP_LOGE(TAG, "audio time %d", audio_time);
 
     int *data_out = NULL;
     if (s_bits_per_chan != 32) {

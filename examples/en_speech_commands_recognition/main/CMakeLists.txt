@@ -1,6 +1,7 @@
 set(srcs
     main.c
     speech_commands_action.c
+    pca9555.c
     )
 
 set(requires
