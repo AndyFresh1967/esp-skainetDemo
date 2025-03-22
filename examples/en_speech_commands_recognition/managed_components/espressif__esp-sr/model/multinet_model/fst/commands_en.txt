@@ -1,0 +1,4 @@
+1,turn on green
+2,turn off green
+3,turn on blue
+4,turn off blue
