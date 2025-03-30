@@ -5,24 +5,29 @@
    software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
    CONDITIONS OF ANY KIND, either express or implied.
 */
-#include <stdio.h>
-#include <stdlib.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <stdio.h>
+#include <stdlib.h>
 
-#include "esp_wn_iface.h"
-#include "esp_wn_models.h"
 #include "esp_afe_sr_iface.h"
 #include "esp_afe_sr_models.h"
+#include "esp_board_init.h"
 #include "esp_mn_iface.h"
 #include "esp_mn_models.h"
-#include "esp_board_init.h"
-#include "speech_commands_action.h"
-#include "model_path.h"
 #include "esp_process_sdkconfig.h"
+#include "esp_wn_iface.h"
+#include "esp_wn_models.h"
+#include "led_state.h"
+#include "model_path.h"
+#include "speech_commands_action.h"
 
-#include "pca9555.h"
+#include "led_strip.h"
+#include "led_strip_interface.h"
+#include <driver/rmt_types_legacy.h>
 
+#include "nvs.h"
+#include "nvs_flash.h"
 
 int detect_flag = 0;
 static esp_afe_sr_iface_t *afe_handle = NULL;
@@ -30,241 +35,280 @@ static volatile int task_flag = 0;
 srmodel_list_t *models = NULL;
 static int play_voice = -2;
 
-#define PCA8555_AUDIO_OUT_PIN		PCA_PIN_P00
-#define PCA8555_AUDIO_OUT_PORT		pca_port_0
-#define PCA8555_GREEN_OUT_PIN		PCA_PIN_P06
-#define PCA8555_GREEN_OUT_PORT		PCA8555_AUDIO_OUT_PORT
-#define PCA8555_BLUE_OUT_PIN		PCA_PIN_P07
-#define PCA8555_BLUE_OUT_PORT		PCA8555_AUDIO_OUT_PORT
+#define RMT_TX_CHANNEL 1 // Канал RMT для передачи данных
+#define LED_GPIO_PIN 3   // Пин для подключения WS2812
+#define LED_COUNT 1      // Количество светодиодов в ленте
+#define LED_STRIP_RMT_RES_HZ (10 * 1000 * 1000)
 
-void play_music(void *arg)
-{
-    while (task_flag)
-    {
-        switch (play_voice)
-        {
-        case -2:
-            vTaskDelay(10);
-            break;
-        case -1:
-            wake_up_action();
-            play_voice = -2;
-            break;
-        case 1:            
-		    pca9555_set_value(PCA8555_AUDIO_OUT_PORT, 1 << PCA8555_GREEN_OUT_PIN, 1 << PCA8555_GREEN_OUT_PIN);
-            play_voice = -2;
-            break;
-        case 2:
-		    pca9555_set_value(PCA8555_AUDIO_OUT_PORT, 1 << PCA8555_GREEN_OUT_PIN, 0 << PCA8555_GREEN_OUT_PIN);
-            play_voice = -2;
-            break;
-        case 3:            
-		    pca9555_set_value(PCA8555_AUDIO_OUT_PORT, 1 << PCA8555_BLUE_OUT_PIN, 1 << PCA8555_BLUE_OUT_PIN);
-            play_voice = -2;
-            break;
-        case 4:
-		    pca9555_set_value(PCA8555_AUDIO_OUT_PORT, 1 << PCA8555_BLUE_OUT_PIN, 0 << PCA8555_BLUE_OUT_PIN);
-            play_voice = -2;
-            break;
-        default:
-//            speech_commands_action(play_voice);
-//            play_voice = -2;
-            break;
-        }
-    }
-    vTaskDelete(NULL);
+led_strip_t *strip;
+led_strip_handle_t led_play_handle;
+
+typedef struct {
+  uint8_t r;
+  uint8_t g;
+  uint8_t b;
+} led_strip_color_t;
+
+#define LED_STRIP_COLOR(r, g, b) ((led_strip_color_t){r, g, b})
+
+static void set_led_color(led_strip_color_t color) {
+  for (int i = 0; i < LED_COUNT; i++) {
+    ESP_ERROR_CHECK(
+        led_strip_set_pixel(led_play_handle, i, color.g, color.r, color.b));
+  }
+  ESP_ERROR_CHECK(led_strip_refresh(led_play_handle));
 }
 
-void feed_Task(void *arg)
-{
-    esp_afe_sr_data_t *afe_data = arg;
-    int audio_chunksize = afe_handle->get_feed_chunksize(afe_data);
-    int nch = afe_handle->get_channel_num(afe_data);
-    int feed_channel = esp_get_feed_channel();
-    assert(nch <= feed_channel);
-    int16_t *i2s_buff = malloc(audio_chunksize * sizeof(int16_t) * feed_channel);
-    assert(i2s_buff);
-
-    while (task_flag)
-    {
-        esp_get_feed_data(false, i2s_buff, audio_chunksize * sizeof(int16_t) * feed_channel);
-
-        afe_handle->feed(afe_data, i2s_buff);
+void set_led_strip_color(void *arg) {
+  static led_strip_color_t color = {0, 0, 0};
+  while (task_flag) {
+    switch (play_voice) {
+    case -2:
+      vTaskDelay(10);
+      break;
+    case -1:
+      wake_up_action();
+      play_voice = -2;
+      break;
+    case 1:
+      // turn on green
+      color.g = 255;
+      play_voice = -2;
+      break;
+    case 2:
+      // turn off green
+      color.g = 0;
+      play_voice = -2;
+      break;
+    case 3:
+      // turn on blue
+      color.b = 255;
+      play_voice = -2;
+      break;
+    case 4:
+      // turn off blue
+      color.b = 0;
+      play_voice = -2;
+      break;
+    default:
+      //            speech_commands_action(play_voice);
+      //            play_voice = -2;
+      break;
     }
-    if (i2s_buff)
-    {
-        free(i2s_buff);
-        i2s_buff = NULL;
-    }
-    vTaskDelete(NULL);
+    set_led_color(color);
+  }
+  vTaskDelete(NULL);
 }
 
-void led_Task(void *arg) {
-	while (1) {
-        if (play_voice == 1){
-		    pca9555_set_value(PCA8555_AUDIO_OUT_PORT, 1 << PCA8555_GREEN_OUT_PIN, 1 << PCA8555_GREEN_OUT_PIN);
-        }
-        else if (play_voice == 2){
-		    pca9555_set_value(PCA8555_AUDIO_OUT_PORT, 1 << PCA8555_GREEN_OUT_PIN, 0 << PCA8555_GREEN_OUT_PIN);
-        }
-/*
-		pca9555_set_value(PCA8555_AUDIO_OUT_PORT,
-				(1 << PCA8555_GREEN_OUT_PIN) | (1 << PCA8555_BLUE_OUT_PIN),
-				((i & 1) << PCA8555_GREEN_OUT_PIN)
-						| ((i & 1) << PCA8555_BLUE_OUT_PIN));
-		i++;
-*/
-		pca9555_set_value(PCA8555_AUDIO_OUT_PORT, 0xff, 0xff);
-		vTaskDelay(100/portTICK_PERIOD_MS);
-		pca9555_set_value(PCA8555_AUDIO_OUT_PORT, 0xff, 0x0);
-		vTaskDelay(100/portTICK_PERIOD_MS);
-	}
+void feed_Task(void *arg) {
+  esp_afe_sr_data_t *afe_data = arg;
+  int audio_chunksize = afe_handle->get_feed_chunksize(afe_data);
+  int nch = afe_handle->get_channel_num(afe_data);
+  int feed_channel = esp_get_feed_channel();
+  assert(nch <= feed_channel);
+  int16_t *i2s_buff = malloc(audio_chunksize * sizeof(int16_t) * feed_channel);
+  assert(i2s_buff);
+
+  while (task_flag) {
+    esp_get_feed_data(false, i2s_buff,
+                      audio_chunksize * sizeof(int16_t) * feed_channel);
+
+    afe_handle->feed(afe_data, i2s_buff);
+  }
+  if (i2s_buff) {
+    free(i2s_buff);
+    i2s_buff = NULL;
+  }
+  vTaskDelete(NULL);
 }
 
-void detect_Task(void *arg)
-{
-    esp_afe_sr_data_t *afe_data = arg;
-    int afe_chunksize = afe_handle->get_fetch_chunksize(afe_data);
-    char *mn_name = esp_srmodel_filter(models, ESP_MN_PREFIX, ESP_MN_ENGLISH);
-    printf("multinet:%s\n", mn_name);
-    esp_mn_iface_t *multinet = esp_mn_handle_from_name(mn_name);
-    model_iface_data_t *model_data = multinet->create(mn_name, 6000);
-    int mu_chunksize = multinet->get_samp_chunksize(model_data);
-    esp_mn_commands_update_from_sdkconfig(multinet, model_data); // Add speech commands from sdkconfig
-    assert(mu_chunksize == afe_chunksize);
-    // print active speech commands
-    multinet->print_active_speech_commands(model_data);
+void detect_Task(void *arg) {
+  esp_afe_sr_data_t *afe_data = arg;
+  int afe_chunksize = afe_handle->get_fetch_chunksize(afe_data);
+  char *mn_name = esp_srmodel_filter(models, ESP_MN_PREFIX, ESP_MN_ENGLISH);
+  printf("multinet:%s\n", mn_name);
+  esp_mn_iface_t *multinet = esp_mn_handle_from_name(mn_name);
+  model_iface_data_t *model_data = multinet->create(mn_name, 6000);
+  int mu_chunksize = multinet->get_samp_chunksize(model_data);
+  esp_mn_commands_update_from_sdkconfig(
+      multinet, model_data); // Add speech commands from sdkconfig
+  assert(mu_chunksize == afe_chunksize);
+  // print active speech commands
+  multinet->print_active_speech_commands(model_data);
 
-    printf("------------detect start------------\n");
-    while (task_flag)
-    {
-        afe_fetch_result_t *res = afe_handle->fetch(afe_data);
-        if (!res || res->ret_value == ESP_FAIL)
-        {
-            printf("fetch error!\n");
-            break;
-        }
-
-        if (res->wakeup_state == WAKENET_DETECTED)
-        {
-            printf("WAKEWORD DETECTED\n");
-            multinet->clean(model_data);
-        }
-        else if (res->wakeup_state == WAKENET_CHANNEL_VERIFIED)
-        {
-            play_voice = -1;
-            detect_flag = 1;
-            printf("AFE_FETCH_CHANNEL_VERIFIED, channel index: %d\n", res->trigger_channel_id);
-            // afe_handle->disable_wakenet(afe_data);
-            // afe_handle->disable_aec(afe_data);
-        }
-
-        if (detect_flag == 1)
-        {
-            esp_mn_state_t mn_state = multinet->detect(model_data, res->data);
-
-            if (mn_state == ESP_MN_STATE_DETECTING)
-            {
-                continue;
-            }
-
-            if (mn_state == ESP_MN_STATE_DETECTED)
-            {
-                esp_mn_results_t *mn_result = multinet->get_results(model_data);
-                for (int i = 0; i < mn_result->num; i++)
-                {
-                    printf("TOP %d, command_id: %d, phrase_id: %d, string: %s, prob: %f\n",
-                           i + 1, mn_result->command_id[i], mn_result->phrase_id[i], mn_result->string, mn_result->prob[i]);
-                    if (i == 0)
-                    {
-                        play_voice = mn_result->command_id[i];
-                    }
-                }
-                printf("-----------listening-----------\n");
-            }
-
-            if (mn_state == ESP_MN_STATE_TIMEOUT)
-            {
-                esp_mn_results_t *mn_result = multinet->get_results(model_data);
-                printf("timeout, string:%s\n", mn_result->string);
-                afe_handle->enable_wakenet(afe_data);
-                detect_flag = 0;
-                printf("\n-----------awaits to be waken up-----------\n");
-                continue;
-            }
-        }
+  printf("------------detect start------------\n");
+  while (task_flag) {
+    afe_fetch_result_t *res = afe_handle->fetch(afe_data);
+    if (!res || res->ret_value == ESP_FAIL) {
+      printf("fetch error!\n");
+      break;
     }
-    if (model_data)
-    {
-        multinet->destroy(model_data);
-        model_data = NULL;
+
+    if (res->wakeup_state == WAKENET_DETECTED) {
+      state_led_speech_recognition(1);
+      printf("WAKEWORD DETECTED\n");
+      multinet->clean(model_data);
+    } else if (res->wakeup_state == WAKENET_CHANNEL_VERIFIED) {
+      play_voice = -1;
+      detect_flag = 1;
+      printf("AFE_FETCH_CHANNEL_VERIFIED, channel index: %d\n",
+             res->trigger_channel_id);
+      // afe_handle->disable_wakenet(afe_data);
+      // afe_handle->disable_aec(afe_data);
     }
-    printf("detect exit\n");
-    vTaskDelete(NULL);
+
+    if (detect_flag == 1) {
+      esp_mn_state_t mn_state = multinet->detect(model_data, res->data);
+
+      if (mn_state == ESP_MN_STATE_DETECTING) {
+        continue;
+      }
+
+      if (mn_state == ESP_MN_STATE_DETECTED) {
+        esp_mn_results_t *mn_result = multinet->get_results(model_data);
+        for (int i = 0; i < mn_result->num; i++) {
+          printf(
+              "TOP %d, command_id: %d, phrase_id: %d, string: %s, prob: %f\n",
+              i + 1, mn_result->command_id[i], mn_result->phrase_id[i],
+              mn_result->string, mn_result->prob[i]);
+          if (i == 0) {
+            play_voice = mn_result->command_id[i];
+          }
+        }
+        printf("-----------listening-----------\n");
+      }
+
+      if (mn_state == ESP_MN_STATE_TIMEOUT) {
+        esp_mn_results_t *mn_result = multinet->get_results(model_data);
+        printf("timeout, string:%s\n", mn_result->string);
+        afe_handle->enable_wakenet(afe_data);
+        detect_flag = 0;
+        state_led_speech_recognition(0);
+        printf("\n-----------awaits to be waken up-----------\n");
+        continue;
+      }
+    }
+  }
+  if (model_data) {
+    multinet->destroy(model_data);
+    model_data = NULL;
+  }
+  printf("detect exit\n");
+  vTaskDelete(NULL);
 }
 
-void app_main()
-{
-    models = esp_srmodel_init("model"); // partition label defined in partitions.csv
-    ESP_ERROR_CHECK(esp_board_init(8000, 2, 16));
-	esp_audio_set_play_vol(100);
-    // ESP_ERROR_CHECK(esp_sdcard_init("/sdcard", 10));
+static led_strip_handle_t init_ws2812() {
+  led_strip_config_t strip_config = {
+      .strip_gpio_num = LED_GPIO_PIN,
+      .max_leds = LED_COUNT,
+      .led_pixel_format = LED_PIXEL_FORMAT_GRB,
+      .led_model = LED_MODEL_WS2812,
+      .flags.invert_out = false, // whether to invert the output signal
+  };
 
-#if defined  CONFIG_ESP32_S3_KORVO_2_V3_0_BOARD
-	esp_err_t err = pca9555_init(I2C_NUM_0,
-			0xff &
-			(
-				(0 << PCA8555_AUDIO_OUT_PIN) | 
-				(0 << PCA8555_GREEN_OUT_PIN) | 
-				(0 << PCA8555_BLUE_OUT_PIN)
-			), 0);
-	if (err != ESP_OK) {
-		printf("pca9555 error = %s\n", esp_err_to_name(err));
-	} else {
-		pca9555_set_value(PCA8555_AUDIO_OUT_PORT, (1 << PCA8555_AUDIO_OUT_PIN),
-				(1 << PCA8555_AUDIO_OUT_PIN));
-		pca9555_set_value(PCA8555_GREEN_OUT_PORT, (1 << PCA8555_GREEN_OUT_PIN),
-				(0 << PCA8555_GREEN_OUT_PIN));
-		pca9555_set_value(PCA8555_BLUE_OUT_PORT, (1 << PCA8555_BLUE_OUT_PIN),
-				(0 << PCA8555_BLUE_OUT_PIN));
-	}
-#endif
-
-#if CONFIG_IDF_TARGET_ESP32
-    printf("This demo only support ESP32S3\n");
-    return;
+  led_strip_rmt_config_t rmt_config = {
+#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 0, 0)
+      .rmt_channel = 0,
 #else
-    afe_handle = (esp_afe_sr_iface_t *)&ESP_AFE_SR_HANDLE;
+      .clk_src = RMT_CLK_SRC_DEFAULT, // different clock source can lead to
+                                      // different power consumption
+      .resolution_hz = LED_STRIP_RMT_RES_HZ, // RMT counter clock frequency
+      .flags.with_dma =
+          false, // DMA feature is available on ESP target like ESP32-S3
 #endif
+  };
 
-    afe_config_t afe_config = AFE_CONFIG_DEFAULT();
-    afe_config.wakenet_model_name = esp_srmodel_filter(models, ESP_WN_PREFIX, NULL);
-    ;
-#if CONFIG_ESP32_S3_EYE_BOARD || CONFIG_ESP32_P4_FUNCTION_EV_BOARD
-    afe_config.pcm_config.total_ch_num = 2;
-    afe_config.pcm_config.mic_num = 1;
-    afe_config.pcm_config.ref_num = 1;
-    afe_config.wakenet_mode = DET_MODE_90;
-    afe_config.se_init = false;
-#endif
-    esp_afe_sr_data_t *afe_data = afe_handle->create_from_config(&afe_config);
+  led_strip_handle_t led_strip;
+  ESP_ERROR_CHECK(
+      led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip));
+  return led_strip;
+}
 
-    task_flag = 1;
-    xTaskCreatePinnedToCore(&detect_Task, "detect", 8 * 1024, (void *)afe_data, 5, NULL, 1);
-    xTaskCreatePinnedToCore(&feed_Task, "feed", 8 * 1024, (void *)afe_data, 5, NULL, 0);
-#if defined CONFIG_ESP32_S3_KORVO_1_V4_0_BOARD
-    xTaskCreatePinnedToCore(&led_Task, "led", 3 * 1024, NULL, 5, NULL, 0);
-#endif
-#if defined CONFIG_ESP32_S3_KORVO_1_V4_0_BOARD || CONFIG_ESP32_S3_KORVO_2_V3_0_BOARD || CONFIG_ESP32_KORVO_V1_1_BOARD || CONFIG_ESP32_S3_BOX_BOARD
-    xTaskCreatePinnedToCore(&play_music, "play", 4 * 1024, NULL, 5, NULL, 1);
-//	xTaskCreatePinnedToCore(&led_Task, "flash", 4 * 1024, NULL, 5, NULL, 0);
-#endif
+void led_strip_control_task(void *pvParameters) {
+  led_strip_set_pixel(led_play_handle, 0, 255, 255, 255);
+  led_strip_refresh(led_play_handle);
+  vTaskDelay(1000 / portTICK_PERIOD_MS);
+  vTaskDelete(NULL);
+}
 
-    // // You can call afe_handle->destroy to destroy AFE.
-    // task_flag = 0;
+/// @brief Проверка причины перезагрузки
+void reboot_reason_check() {
+  esp_err_t err = nvs_flash_init();
+  if (err == ESP_ERR_NVS_NO_FREE_PAGES ||
+      err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    // NVS partition was truncated and needs to be erased
+    // Retry nvs_flash_init
+    ESP_ERROR_CHECK(nvs_flash_erase());
+    err = nvs_flash_init();
+  }
+  ESP_ERROR_CHECK(err);
 
-    // printf("destroy\n");
-    // afe_handle->destroy(afe_data);
-    // afe_data = NULL;
-    // printf("successful\n");
+  // Открытие NVS хранилища
+  nvs_handle_t nvs_handle;
+  ESP_ERROR_CHECK(nvs_open("storage", NVS_READWRITE, &nvs_handle));
+
+  // Чтение счетчика перезагрузок
+  uint32_t reboot_count = 0;
+  err = nvs_get_u32(nvs_handle, "reboot_count", &reboot_count);
+  if (err == ESP_ERR_NVS_NOT_FOUND) {
+    reboot_count = 0; // Если ключ не найден, начинаем с 0
+  }
+
+  // Проверка причины перезагрузки
+  esp_reset_reason_t reset_reason = esp_reset_reason();
+  if (reset_reason == ESP_RST_POWERON) {
+    printf("Power-on reset detected. Resetting reboot counter.\n");
+    reboot_count = 0;
+    ESP_ERROR_CHECK(nvs_set_u32(nvs_handle, "reboot_count", reboot_count));
+    ESP_ERROR_CHECK(nvs_commit(nvs_handle));
+  }
+
+  // Увеличение счетчика
+  reboot_count++;
+  printf("Reboot count: %d\n", reboot_count);
+
+  // Сохранение обновленного значения в NVS
+  ESP_ERROR_CHECK(nvs_set_u32(nvs_handle, "reboot_count", reboot_count));
+  ESP_ERROR_CHECK(nvs_commit(nvs_handle));
+  nvs_close(nvs_handle);
+
+  // Проверка, достиг ли счетчик 3
+  if (reboot_count >= 3) {
+    printf("Reboot limit reached. Halting the chip.\n");
+
+    esp_deep_sleep_start(); // Остановка чипа
+  }
+}
+
+void app_main() {
+  reboot_reason_check();
+  ESP_ERROR_CHECK(esp_board_init(8000, 2, 16));
+  ESP_ERROR_CHECK(state_led_init());
+
+  led_play_handle = init_ws2812();
+  ESP_ERROR_CHECK(led_play_handle != NULL ? ESP_OK : ESP_FAIL);
+  ESP_ERROR_CHECK(led_strip_clear(led_play_handle));
+  state_led_ready(0);
+
+  models =
+      esp_srmodel_init("model"); // partition label defined in partitions.csv
+  esp_audio_set_play_vol(100);
+
+  afe_handle = (esp_afe_sr_iface_t *)&ESP_AFE_SR_HANDLE;
+
+  afe_config_t afe_config = AFE_CONFIG_DEFAULT();
+  afe_config.wakenet_model_name =
+      esp_srmodel_filter(models, ESP_WN_PREFIX, NULL);
+  esp_afe_sr_data_t *afe_data = afe_handle->create_from_config(&afe_config);
+
+  task_flag = 1;
+  xTaskCreatePinnedToCore(&detect_Task, "detect", 8 * 1024, (void *)afe_data, 5,
+                          NULL, 1);
+  xTaskCreatePinnedToCore(&feed_Task, "feed", 8 * 1024, (void *)afe_data, 5,
+                          NULL, 0);
+  xTaskCreatePinnedToCore(&set_led_strip_color, "play", 4 * 1024, NULL, 5, NULL,
+                          1);
+  state_led_ready(1);
+  xTaskCreatePinnedToCore(&led_strip_control_task, "led_strip", 4 * 1024, NULL,
+                          5, NULL, 1);
 }

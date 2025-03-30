@@ -1,0 +1,22 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Flash Only Changes",  // Название задачи
+            "type": "shell",  // Тип задачи
+            "command": "C:\\Espressif\\python_env\\idf5.0_py3.11_env\\Scripts\\python.exe",  // Команда
+            "args": [
+                "C:\\Users\\Admin\\esp\\v5.0.7\\esp-idf\\components\\esptool_py\\esptool\\esptool.py", 
+                "-p", "COM17", "-b", "900000", "--before", "default_reset", "--after", "hard_reset", "--chip", "esp32s3", 
+                "write_flash", "--flash_mode", "dio", "--flash_freq", "80m", "--flash_size", "detect", "0x0", 
+                "build/bootloader/bootloader.bin", "0x10000", "build/speech_commands_recognition.bin"
+            ],
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "showOutput": "always"
+        }
+    ]
+}
