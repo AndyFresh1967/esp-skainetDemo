@@ -90,9 +90,22 @@ void set_led_strip_color(void *arg) {
       color.b = 0;
       play_voice = -2;
       break;
+    case 5:
+      // turn on red
+      color.r = 255;
+      play_voice = -2;
+      break;
+    case 6:
+      // turn off red
+      color.r = 0;
+      play_voice = -2;
+      break;
+    case 7:
+      // vkluchi krasni
+      color.r = 0;
+      play_voice = -2;
+      break;
     default:
-      //            speech_commands_action(play_voice);
-      //            play_voice = -2;
       break;
     }
     set_led_color(color);
@@ -102,17 +115,23 @@ void set_led_strip_color(void *arg) {
 
 void feed_Task(void *arg) {
   esp_afe_sr_data_t *afe_data = arg;
+  //Получает размер блока данных для передачи в AFE.
   int audio_chunksize = afe_handle->get_feed_chunksize(afe_data);
+  //Получает количество каналов в AFE.
   int nch = afe_handle->get_channel_num(afe_data);
+  //Получает количество каналов доступных для обработки.
   int feed_channel = esp_get_feed_channel();
+  //Проверка согласованости
   assert(nch <= feed_channel);
+  //Выделяет память для буфера аудио данных.
   int16_t *i2s_buff = malloc(audio_chunksize * sizeof(int16_t) * feed_channel);
   assert(i2s_buff);
 
   while (task_flag) {
+    //Получает данные из потока данных.
     esp_get_feed_data(false, i2s_buff,
                       audio_chunksize * sizeof(int16_t) * feed_channel);
-
+    //Передает данные в AFE.
     afe_handle->feed(afe_data, i2s_buff);
   }
   if (i2s_buff) {
@@ -123,27 +142,32 @@ void feed_Task(void *arg) {
 }
 
 void detect_Task(void *arg) {
+  //Данные от AFE
   esp_afe_sr_data_t *afe_data = arg;
   int afe_chunksize = afe_handle->get_fetch_chunksize(afe_data);
+  //Получает имя модели MultiNet для английского языка с помощью esp_srmodel_filter.
   char *mn_name = esp_srmodel_filter(models, ESP_MN_PREFIX, ESP_MN_ENGLISH);
   printf("multinet:%s\n", mn_name);
+  //Получает обработчик MultiNet для английского языка.
   esp_mn_iface_t *multinet = esp_mn_handle_from_name(mn_name);
   model_iface_data_t *model_data = multinet->create(mn_name, 6000);
   int mu_chunksize = multinet->get_samp_chunksize(model_data);
   esp_mn_commands_update_from_sdkconfig(
-      multinet, model_data); // Add speech commands from sdkconfig
+      multinet, model_data);
+  //проверка согласованности MultiNet и AFE
   assert(mu_chunksize == afe_chunksize);
   // print active speech commands
   multinet->print_active_speech_commands(model_data);
 
   printf("------------detect start------------\n");
   while (task_flag) {
+    //Извлекает данные из AFE.
     afe_fetch_result_t *res = afe_handle->fetch(afe_data);
     if (!res || res->ret_value == ESP_FAIL) {
       printf("fetch error!\n");
       break;
     }
-
+    //Проверяет, было ли обнаружено слово-ключевое слово.
     if (res->wakeup_state == WAKENET_DETECTED) {
       state_led_speech_recognition(1);
       printf("WAKEWORD DETECTED\n");
@@ -158,13 +182,15 @@ void detect_Task(void *arg) {
     }
 
     if (detect_flag == 1) {
+      //выполняем распознавание команды
       esp_mn_state_t mn_state = multinet->detect(model_data, res->data);
 
       if (mn_state == ESP_MN_STATE_DETECTING) {
         continue;
       }
-
+      //команда распознана
       if (mn_state == ESP_MN_STATE_DETECTED) {
+        //какая конкретная команда
         esp_mn_results_t *mn_result = multinet->get_results(model_data);
         for (int i = 0; i < mn_result->num; i++) {
           printf(
@@ -282,6 +308,7 @@ void reboot_reason_check() {
 
 void app_main() {
   reboot_reason_check();
+  //Инициализирует аппаратные компоненты, такие как аудиоподсистема и т.п.
   ESP_ERROR_CHECK(esp_board_init(8000, 2, 16));
   ESP_ERROR_CHECK(state_led_init());
 
@@ -290,6 +317,7 @@ void app_main() {
   ESP_ERROR_CHECK(led_strip_clear(led_play_handle));
   state_led_ready(0);
 
+  //Читаем модели (по сути веса) из флаш-памяти
   models =
       esp_srmodel_init("model"); // partition label defined in partitions.csv
   esp_audio_set_play_vol(100);
@@ -297,18 +325,24 @@ void app_main() {
   afe_handle = (esp_afe_sr_iface_t *)&ESP_AFE_SR_HANDLE;
 
   afe_config_t afe_config = AFE_CONFIG_DEFAULT();
+  //находим модель по префиксу ESP_WN_PREFIX, это модель для WakeNet
   afe_config.wakenet_model_name =
       esp_srmodel_filter(models, ESP_WN_PREFIX, NULL);
+  //Создаёт конфигурацию по умолчанию для AFE.
   esp_afe_sr_data_t *afe_data = afe_handle->create_from_config(&afe_config);
 
   task_flag = 1;
-  xTaskCreatePinnedToCore(&detect_Task, "detect", 8 * 1024, (void *)afe_data, 5,
-                          NULL, 1);
+  //Считывает аудиоданные с микрофона. Передаёт эти данные в Acoustic Front-End (AFE) для обработки.
   xTaskCreatePinnedToCore(&feed_Task, "feed", 8 * 1024, (void *)afe_data, 5,
                           NULL, 0);
+  //Получает данные от AFE обнаружение ключевого слова и распонавание команд
+  xTaskCreatePinnedToCore(&detect_Task, "detect", 8 * 1024, (void *)afe_data, 5,
+                          NULL, 1);
+  //Выполняет команды
   xTaskCreatePinnedToCore(&set_led_strip_color, "play", 4 * 1024, NULL, 5, NULL,
                           1);
   state_led_ready(1);
+  //мигнуть светодиодами при запуске
   xTaskCreatePinnedToCore(&led_strip_control_task, "led_strip", 4 * 1024, NULL,
                           5, NULL, 1);
 }

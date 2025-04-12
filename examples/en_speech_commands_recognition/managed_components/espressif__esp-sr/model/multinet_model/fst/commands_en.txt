@@ -1,4 +1,11 @@
 1,turn on green
 2,turn off green
 3,turn on blue
+3,blue on
 4,turn off blue
+4,blue off
+5,turn on red
+5,red on
+6,turn off red
+6,red off
+7,vkluchi

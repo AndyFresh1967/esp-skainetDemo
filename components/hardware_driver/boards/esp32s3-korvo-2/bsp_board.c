@@ -373,7 +373,7 @@ esp_err_t bsp_audio_play(const int16_t* data, int length, TickType_t ticks_to_wa
     int audio_time = 1;
     audio_time *= (16000 / s_play_sample_rate);
     audio_time *= (2 / s_play_channel_format);
-    ESP_LOGE(TAG, "audio time %d", audio_time);
+    //ESP_LOGE(TAG, "audio time %d", audio_time);
 
     int *data_out = NULL;
     if (s_bits_per_chan != 32) {
